@@ -1,0 +1,356 @@
+{
+  "version": "1.0",
+  "description": "WebSocket time servers configuration for commpage_time_probe",
+  "servers": [
+    {
+      "name": "Binance BTC/USDT Trade Stream",
+      "url": "wss://stream.binance.com:9443/ws/btcusdt@trade",
+      "type": "stream",
+      "timestamp_field": "E",
+      "timestamp_unit": "milliseconds",
+      "description": "Binance cryptocurrency trade stream with event timestamps"
+    },
+    {
+      "name": "Binance ETH/USDT Trade Stream",
+      "url": "wss://stream.binance.com:9443/ws/ethusdt@trade",
+      "type": "stream",
+      "timestamp_field": "E",
+      "timestamp_unit": "milliseconds",
+      "description": "Binance Ethereum trade stream with event timestamps"
+    },
+    {
+      "name": "Binance SOL/USDT Trade Stream",
+      "url": "wss://stream.binance.com:9443/ws/solusdt@trade",
+      "type": "stream",
+      "timestamp_field": "E",
+      "timestamp_unit": "milliseconds",
+      "description": "Binance Solana trade stream with event timestamps"
+    },
+    {
+      "name": "Binance BNB/USDT Trade Stream",
+      "url": "wss://stream.binance.com:9443/ws/bnbusdt@trade",
+      "type": "stream",
+      "timestamp_field": "E",
+      "timestamp_unit": "milliseconds",
+      "description": "Binance BNB trade stream with event timestamps"
+    },
+    {
+      "name": "Binance XRP/USDT Trade Stream",
+      "url": "wss://stream.binance.com:9443/ws/xrpusdt@trade",
+      "type": "stream",
+      "timestamp_field": "E",
+      "timestamp_unit": "milliseconds",
+      "description": "Binance XRP trade stream with event timestamps"
+    },
+    {
+      "name": "Binance BTC/USDT Ticker",
+      "url": "wss://stream.binance.com:9443/ws/btcusdt@ticker",
+      "type": "stream",
+      "timestamp_field": "E",
+      "timestamp_unit": "milliseconds",
+      "description": "Binance BTC/USDT ticker with 24hr ticker statistics"
+    },
+    {
+      "name": "Binance All Market Tickers Stream",
+      "url": "wss://stream.binance.com:9443/ws/!ticker@arr",
+      "type": "stream",
+      "timestamp_field": "E",
+      "timestamp_unit": "milliseconds",
+      "description": "All market tickers stream (array of all symbols)"
+    },
+    {
+      "name": "Coinbase BTC-USD Feed",
+      "url": "wss://ws-feed.exchange.coinbase.com",
+      "type": "request",
+      "request_message": "{\"type\":\"subscribe\",\"product_ids\":[\"BTC-USD\"],\"channels\":[\"ticker\"]}",
+      "timestamp_field": "time",
+      "timestamp_unit": "iso8601",
+      "description": "Coinbase Pro BTC-USD ticker feed"
+    },
+    {
+      "name": "Coinbase ETH-USD Feed",
+      "url": "wss://ws-feed.exchange.coinbase.com",
+      "type": "request",
+      "request_message": "{\"type\":\"subscribe\",\"product_ids\":[\"ETH-USD\"],\"channels\":[\"ticker\"]}",
+      "timestamp_field": "time",
+      "timestamp_unit": "iso8601",
+      "description": "Coinbase Pro ETH-USD ticker feed"
+    },
+    {
+      "name": "Coinbase SOL-USD Feed",
+      "url": "wss://ws-feed.exchange.coinbase.com",
+      "type": "request",
+      "request_message": "{\"type\":\"subscribe\",\"product_ids\":[\"SOL-USD\"],\"channels\":[\"ticker\"]}",
+      "timestamp_field": "time",
+      "timestamp_unit": "iso8601",
+      "description": "Coinbase SOL-USD ticker feed"
+    },
+    {
+      "name": "Kraken BTC/USD Ticker",
+      "url": "wss://ws.kraken.com/v2",
+      "type": "request",
+      "request_message": "{\"method\":\"subscribe\",\"params\":{\"channel\":\"ticker\",\"symbol\":[\"BTC/USD\"]}}",
+      "timestamp_field": "timestamp",
+      "timestamp_unit": "iso8601",
+      "description": "Kraken v2 BTC/USD ticker"
+    },
+    {
+      "name": "Kraken ETH/USD Ticker",
+      "url": "wss://ws.kraken.com/v2",
+      "type": "request",
+      "request_message": "{\"method\":\"subscribe\",\"params\":{\"channel\":\"ticker\",\"symbol\":[\"ETH/USD\"]}}",
+      "timestamp_field": "timestamp",
+      "timestamp_unit": "iso8601",
+      "description": "Kraken v2 ETH/USD ticker feed"
+    },
+    {
+      "name": "Kraken SOL/USD Ticker",
+      "url": "wss://ws.kraken.com/v2",
+      "type": "request",
+      "request_message": "{\"method\":\"subscribe\",\"params\":{\"channel\":\"ticker\",\"symbol\":[\"SOL/USD\"]}}",
+      "timestamp_field": "timestamp",
+      "timestamp_unit": "iso8601",
+      "description": "Kraken v2 SOL/USD ticker feed"
+    },
+    {
+      "name": "OKX BTC-USDT Public Trades",
+      "url": "wss://ws.okx.com:8443/ws/v5/public",
+      "type": "request",
+      "request_message": "{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades\",\"instId\":\"BTC-USDT\"}]}",
+      "timestamp_field": "ts",
+      "timestamp_unit": "milliseconds",
+      "description": "OKX exchange BTC-USDT public trades"
+    },
+    {
+      "name": "OKX ETH-USDT Public Trades",
+      "url": "wss://ws.okx.com:8443/ws/v5/public",
+      "type": "request",
+      "request_message": "{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades\",\"instId\":\"ETH-USDT\"}]}",
+      "timestamp_field": "ts",
+      "timestamp_unit": "milliseconds",
+      "description": "OKX exchange ETH-USDT public trades"
+    },
+    {
+      "name": "OKX SOL-USDT Public Trades",
+      "url": "wss://ws.okx.com:8443/ws/v5/public",
+      "type": "request",
+      "request_message": "{\"op\":\"subscribe\",\"args\":[{\"channel\":\"trades\",\"instId\":\"SOL-USDT\"}]}",
+      "timestamp_field": "ts",
+      "timestamp_unit": "milliseconds",
+      "description": "OKX exchange SOL-USDT public trades"
+    },
+    {
+      "name": "Bybit BTCUSDT Public Trade",
+      "url": "wss://stream.bybit.com/v5/public/spot",
+      "type": "request",
+      "request_message": "{\"op\":\"subscribe\",\"args\":[\"publicTrade.BTCUSDT\"]}",
+      "timestamp_field": "T",
+      "timestamp_unit": "milliseconds",
+      "description": "Bybit exchange BTCUSDT public trades"
+    },
+    {
+      "name": "Bybit ETHUSDT Public Trade",
+      "url": "wss://stream.bybit.com/v5/public/spot",
+      "type": "request",
+      "request_message": "{\"op\":\"subscribe\",\"args\":[\"publicTrade.ETHUSDT\"]}",
+      "timestamp_field": "T",
+      "timestamp_unit": "milliseconds",
+      "description": "Bybit exchange ETHUSDT public trades"
+    },
+    {
+      "name": "Bybit SOLUSDT Public Trade",
+      "url": "wss://stream.bybit.com/v5/public/spot",
+      "type": "request",
+      "request_message": "{\"op\":\"subscribe\",\"args\":[\"publicTrade.SOLUSDT\"]}",
+      "timestamp_field": "T",
+      "timestamp_unit": "milliseconds",
+      "description": "Bybit exchange SOLUSDT public trades"
+    },
+    {
+      "name": "KuCoin BTC-USDT Match Execution",
+      "url": "https://api.kucoin.com/api/v1/bullet-public",
+      "type": "request",
+      "request_message": "{\"id\":1,\"type\":\"subscribe\",\"topic\":\"/market/match:BTC-USDT\",\"response\":true}",
+      "timestamp_field": "time",
+      "timestamp_unit": "nanoseconds",
+      "description": "KuCoin public bullet token + BTC-USDT trade match channel"
+    },
+    {
+      "name": "Bitfinex BTCUSD Trades",
+      "url": "wss://api-pub.bitfinex.com/ws/2",
+      "type": "request",
+      "request_message": "{\"event\":\"subscribe\",\"channel\":\"trades\",\"symbol\":\"tBTCUSD\"}",
+      "timestamp_field": "time",
+      "timestamp_unit": "milliseconds",
+      "description": "Bitfinex BTCUSD trades"
+    },
+    {
+      "name": "Bitfinex ETHUSD Trades",
+      "url": "wss://api-pub.bitfinex.com/ws/2",
+      "type": "request",
+      "request_message": "{\"event\":\"subscribe\",\"channel\":\"trades\",\"symbol\":\"tETHUSD\"}",
+      "timestamp_field": "time",
+      "timestamp_unit": "milliseconds",
+      "description": "Bitfinex ETHUSD trades"
+    },
+    {
+      "name": "Bitstamp BTC/USD Live Trades",
+      "url": "wss://ws.bitstamp.net",
+      "type": "request",
+      "request_message": "{\"event\":\"bts:subscribe\",\"data\":{\"channel\":\"live_trades_btcusd\"}}",
+      "timestamp_field": "microtimestamp",
+      "timestamp_unit": "microseconds",
+      "description": "Bitstamp BTC/USD live trades"
+    },
+    {
+      "name": "Bitstamp ETH/USD Live Trades",
+      "url": "wss://ws.bitstamp.net",
+      "type": "request",
+      "request_message": "{\"event\":\"bts:subscribe\",\"data\":{\"channel\":\"live_trades_ethusd\"}}",
+      "timestamp_field": "microtimestamp",
+      "timestamp_unit": "microseconds",
+      "description": "Bitstamp ETH/USD live trades"
+    },
+    {
+      "name": "Poloniex BTC-USDT Trades",
+      "url": "wss://ws.poloniex.com/ws/public",
+      "type": "request",
+      "request_message": "{\"event\":\"subscribe\",\"channel\":[\"trades\"],\"symbols\":[\"BTC_USDT\"]}",
+      "timestamp_field": "ts",
+      "timestamp_unit": "milliseconds",
+      "description": "Poloniex BTC-USDT trades"
+    },
+    {
+      "name": "Gate.io BTC_USDT Trades",
+      "url": "wss://api.gateio.ws/ws/v4/",
+      "type": "request",
+      "request_message": "{\"time\":1,\"channel\":\"spot.trades\",\"event\":\"subscribe\",\"payload\":[\"BTC_USDT\"]}",
+      "timestamp_field": "time_ms",
+      "timestamp_unit": "milliseconds",
+      "description": "Gate.io BTC/USDT trades"
+    },
+    {
+      "name": "Crypto.com BTC_USDT Trade",
+      "url": "wss://stream.crypto.com/v2/market",
+      "type": "request",
+      "request_message": "{\"id\":1,\"method\":\"subscribe\",\"params\":{\"channels\":[\"trade.BTC_USDT\"]}}",
+      "timestamp_field": "t",
+      "timestamp_unit": "milliseconds",
+      "description": "Crypto.com BTC/USDT trades"
+    },
+    {
+      "name": "Huobi BTC-USDT Trade",
+      "url": "wss://api.huobi.pro/ws",
+      "type": "request",
+      "request_message": "{\"sub\":\"market.btcusdt.trade.detail\",\"id\":\"1\"}",
+      "timestamp_field": "ts",
+      "timestamp_unit": "milliseconds",
+      "description": "Huobi BTC/USDT trades"
+    },
+    {
+      "name": "Binance US Server",
+      "url": "wss://stream.binance.us:9443/ws/btcusdt@trade",
+      "type": "stream",
+      "timestamp_field": "E",
+      "timestamp_unit": "milliseconds",
+      "description": "Binance US trade stream (US region, environment-dependent reachability)"
+    },
+    {
+      "name": "Binance EU Server",
+      "url": "wss://stream.binance.com:9443/ws/btcusdt@trade",
+      "type": "stream",
+      "timestamp_field": "E",
+      "timestamp_unit": "milliseconds",
+      "description": "Binance EU trade stream (EU region)"
+    }
+  ],
+  "groups": {
+    "binance": [
+      "Binance BTC/USDT Trade Stream",
+      "Binance ETH/USDT Trade Stream",
+      "Binance SOL/USDT Trade Stream",
+      "Binance BNB/USDT Trade Stream",
+      "Binance XRP/USDT Trade Stream",
+      "Binance BTC/USDT Ticker",
+      "Binance All Market Tickers Stream",
+      "Binance US Server",
+      "Binance EU Server"
+    ],
+    "crypto": [
+      "Binance BTC/USDT Trade Stream",
+      "Binance ETH/USDT Trade Stream",
+      "Binance SOL/USDT Trade Stream",
+      "Binance BNB/USDT Trade Stream",
+      "Binance XRP/USDT Trade Stream",
+      "Coinbase BTC-USD Feed",
+      "Coinbase ETH-USD Feed",
+      "Coinbase SOL-USD Feed",
+      "Kraken BTC/USD Ticker",
+      "Kraken ETH/USD Ticker",
+      "Kraken SOL/USD Ticker",
+      "OKX BTC-USDT Public Trades",
+      "OKX ETH-USDT Public Trades",
+      "OKX SOL-USDT Public Trades",
+      "Bybit BTCUSDT Public Trade",
+      "Bybit ETHUSDT Public Trade",
+      "Bybit SOLUSDT Public Trade",
+      "Bitfinex BTCUSD Trades",
+      "Bitfinex ETHUSD Trades",
+      "Bitstamp BTC/USD Live Trades",
+      "Bitstamp ETH/USD Live Trades"
+    ],
+    "fast": [
+      "Binance BTC/USDT Trade Stream",
+      "Binance BTC/USDT Ticker",
+      "Bitstamp BTC/USD Live Trades",
+      "Coinbase BTC-USD Feed"
+    ],
+    "us": [
+      "Binance US Server",
+      "Coinbase BTC-USD Feed",
+      "Kraken BTC/USD Ticker",
+      "Bitstamp BTC/USD Live Trades"
+    ],
+    "eu": [
+      "Binance EU Server",
+      "Kraken BTC/USD Ticker",
+      "Bitfinex BTCUSD Trades"
+    ],
+    "asia": [
+      "OKX BTC-USDT Public Trades",
+      "Bybit BTCUSDT Public Trade",
+      "Gate.io BTC_USDT Trades",
+      "Huobi BTC-USDT Trade"
+    ],
+    "exchange": [
+      "Coinbase BTC-USD Feed",
+      "Kraken BTC/USD Ticker",
+      "OKX BTC-USDT Public Trades",
+      "Bybit BTCUSDT Public Trade",
+      "Bitfinex BTCUSD Trades",
+      "Bitstamp BTC/USD Live Trades"
+    ],
+    "altcoins": [
+      "Binance SOL/USDT Trade Stream",
+      "Binance BNB/USDT Trade Stream",
+      "Binance XRP/USDT Trade Stream",
+      "Coinbase SOL-USD Feed",
+      "Kraken SOL/USD Ticker",
+      "OKX SOL-USDT Public Trades",
+      "Bybit SOLUSDT Public Trade"
+    ]
+  },
+  "notes": {
+    "binance": "Binance streams use 'E' field for event time in milliseconds since Unix epoch. All stream URLs contain '@' character for automatic detection.",
+    "coinbase": "Coinbase uses ISO8601 timestamps like '2024-03-07T12:34:56.789Z'. Requires subscription message.",
+    "kraken": "Kraken v2 ticker uses nested data[0].timestamp in ISO8601 format.",
+    "okx": "OKX uses 'ts' field in milliseconds. Requires v5 public channel subscription.",
+    "bybit": "Bybit uses 'T' field for trade time in milliseconds. v5 public spot API.",
+    "bitfinex": "Bitfinex uses 'time' in milliseconds. Uses channel symbol format like 'tBTCUSD'.",
+    "bitstamp": "Bitstamp uses 'microtimestamp' - microseconds since epoch! Very high precision.",
+    "latency": "Typical latency: 10-50ms (same region), 50-150ms (cross-region), 150-300ms (intercontinental).",
+    "timestamp_fields": "Supported: 'E', 'T', 'ts', 'time', 'time_ms', 'microtimestamp', 'seconds', 'create_time', 'create_time_ms', 't', 'timestamp'. ISO8601 strings and ns/us/ms/sec numeric values are also parsed.",
+    "environment_dependent": "Some endpoints depend on region/network policy. Binance US may time out outside supported environments.",
+    "usage": "Use with commpage_time_probe: ./commpage_time_probe <url> [request_json]"
+  }
+}
