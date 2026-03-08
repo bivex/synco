@@ -7,7 +7,7 @@
  * https://github.com/bivex
  *
  * Created: 2026-03-08 01:17
- * Last Updated: 2026-03-08 02:17
+ * Last Updated: 2026-03-08 10:29
  *
  * Licensed under the MIT License.
  * Commercial licensing available upon request.
@@ -82,14 +82,22 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <exception>
+#include <memory>
+#include <new>
 #include <unistd.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <time.h>
+#include <vector>
 #include <dispatch/dispatch.h>
+#include <sys/mman.h>
 #include <zlib.h>
 
 #if !defined(__APPLE__) || !defined(__aarch64__)
@@ -109,6 +117,11 @@ constexpr uintptr_t kCommPageTimebaseOffset = kCommPageStart + 0x088;
 constexpr uintptr_t kCommPageUserTimebase = kCommPageStart + 0x090;
 constexpr uintptr_t kCommPageNewTimeOfDayData = kCommPageStart + 0x120;
 constexpr int64_t kNsPerSecond = 1000000000LL;
+constexpr size_t kThreadWatchdogReplicaCount = 5;
+constexpr uint64_t kThreadWatchdogPollIntervalNs = 250000ULL;
+constexpr uint64_t kThreadWatchdogPostReadyGraceNs = kThreadWatchdogPollIntervalNs * 4ULL;
+constexpr size_t kThreadWatchdogBaseRegionPages = 12;
+constexpr size_t kThreadWatchdogRegionStridePages = 7;
 
 enum : uint8_t
 {
@@ -342,6 +355,93 @@ uint64_t AbsI64(int64_t value)
     return static_cast<uint64_t>(value < 0 ? -value : value);
 }
 
+struct ThreadDeltaWindow
+{
+    int64_t local_before_ns = 0;
+    int64_t local_after_ns = 0;
+    uint64_t monotonic_before_ns = 0;
+    uint64_t monotonic_after_ns = 0;
+};
+
+struct ThreadDeltaEvaluation
+{
+    int64_t wall_elapsed_ns = 0;
+    uint64_t monotonic_elapsed_ns = 0;
+    uint64_t clock_gap_ns = 0;
+};
+
+ThreadDeltaEvaluation EvaluateThreadDeltaWindow(const ThreadDeltaWindow& window)
+{
+    ThreadDeltaEvaluation evaluation{};
+    evaluation.wall_elapsed_ns = window.local_after_ns - window.local_before_ns;
+    evaluation.monotonic_elapsed_ns = window.monotonic_after_ns - window.monotonic_before_ns;
+    evaluation.clock_gap_ns =
+        AbsI64(evaluation.wall_elapsed_ns - static_cast<int64_t>(evaluation.monotonic_elapsed_ns));
+    return evaluation;
+}
+
+struct ThreadWatchdogAggregate
+{
+    uint64_t thread_count = 0;
+    uint64_t ready_thread_count = 0;
+    uint64_t sample_count = 0;
+    uint64_t post_ready_stall_count = 0;
+    uint64_t max_delta_ns = 0;
+    uint64_t max_clock_gap_ns = 0;
+    uint64_t memory_spread_bytes = 0;
+    uint64_t layout_fingerprint = 0;
+    bool failed = false;
+};
+
+struct ThreadWatchdogControl
+{
+    std::atomic<bool> keep_running {false};
+    std::atomic<bool> ready {false};
+    std::atomic<bool> failed {false};
+    std::atomic<uint64_t> heartbeat {0};
+    std::atomic<uint64_t> phase_mix {0};
+};
+
+struct ThreadWatchdogMetrics
+{
+    std::atomic<uint64_t> sample_count {0};
+    std::atomic<uint64_t> max_delta_ns {0};
+    std::atomic<uint64_t> max_clock_gap_ns {0};
+};
+
+struct ThreadWatchdogMapping
+{
+    void* region = MAP_FAILED;
+    size_t region_size = 0;
+    void* object = nullptr;
+    size_t accessible_page_index = 0;
+    size_t object_offset_in_page = 0;
+};
+
+struct ThreadWatchdogLayout
+{
+    size_t region_page_count = 0;
+    size_t accessible_page_index = 0;
+    size_t object_offset_in_page = 0;
+};
+
+struct ThreadWatchdogReplica
+{
+    size_t replica_index = 0;
+    ThreadWatchdogMapping control_mapping;
+    ThreadWatchdogMapping metrics_mapping;
+    ThreadWatchdogControl* control = nullptr;
+    ThreadWatchdogMetrics* metrics = nullptr;
+    uint64_t layout_fingerprint = 0;
+};
+
+struct ThreadWatchdogRuntime
+{
+    std::vector<ThreadWatchdogReplica> replicas;
+    std::vector<std::thread> threads;
+    uint64_t runtime_entropy = 0;
+};
+
 struct VerificationResult
 {
     uint8_t commpage_mode = 0;
@@ -357,6 +457,15 @@ struct VerificationResult
     std::string remote_time_source = "http_date_header";
     std::string remote_time_field = "Date";
     uint64_t remote_time_precision_ms = 1000;
+    uint64_t thread_watchdog_count = 0;
+    uint64_t thread_watchdog_ready_count = 0;
+    uint64_t thread_watchdog_sample_count = 0;
+    uint64_t thread_watchdog_post_ready_stall_count = 0;
+    uint64_t thread_watchdog_max_delta_ns = 0;
+    uint64_t thread_watchdog_max_clock_gap_ns = 0;
+    uint64_t thread_watchdog_memory_spread_bytes = 0;
+    uint64_t thread_watchdog_layout_fingerprint = 0;
+    bool thread_watchdog_failed = false;
 };
 
 struct WatchdogEvaluation
@@ -369,6 +478,470 @@ struct WatchdogEvaluation
     uint64_t effective_remote_threshold_ms = 0;
     std::string anomaly_reasons = "none";
     bool anomaly_detected = false;
+};
+
+size_t GetSystemPageSize()
+{
+    const long page_size = sysconf(_SC_PAGESIZE);
+    return page_size > 0 ? static_cast<size_t>(page_size) : 4096U;
+}
+
+uint64_t MixThreadWatchdogEntropy(uint64_t value)
+{
+    value += 0x9e3779b97f4a7c15ULL;
+    value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+    return value ^ (value >> 31);
+}
+
+size_t AlignDownSize(size_t value, size_t alignment)
+{
+    return alignment > 1 ? (value / alignment) * alignment : value;
+}
+
+ThreadWatchdogLayout ComputeThreadWatchdogLayout(size_t page_size,
+                                                 size_t replica_index,
+                                                 uint64_t runtime_entropy,
+                                                 uint64_t salt,
+                                                 size_t object_size,
+                                                 size_t object_alignment)
+{
+    const uint64_t entropy =
+        MixThreadWatchdogEntropy(runtime_entropy ^ salt ^
+                                 ((static_cast<uint64_t>(replica_index) + 1ULL) *
+                                  0x9e3779b97f4a7c15ULL));
+    const size_t front_guard_pages = 1U + static_cast<size_t>(entropy & 0x3ULL);
+    const size_t back_guard_pages = 2U + static_cast<size_t>((entropy >> 8) & 0x3ULL);
+    const size_t jitter_pages = 2U + static_cast<size_t>((entropy >> 16) & 0x7ULL);
+
+    ThreadWatchdogLayout layout{};
+    layout.region_page_count = kThreadWatchdogBaseRegionPages +
+                               (replica_index * kThreadWatchdogRegionStridePages) +
+                               front_guard_pages + back_guard_pages + jitter_pages;
+
+    const size_t usable_page_count =
+        layout.region_page_count - front_guard_pages - back_guard_pages;
+    layout.accessible_page_index =
+        front_guard_pages + static_cast<size_t>((entropy >> 24) % usable_page_count);
+
+    const size_t slot_alignment = object_alignment > 0 ? object_alignment : 1U;
+    const size_t max_offset = page_size > object_size
+                                  ? page_size - object_size
+                                  : 0U;
+    const size_t margin = max_offset > 512U ? 128U + static_cast<size_t>((entropy >> 32) & 0xffULL)
+                                            : 0U;
+    const size_t min_offset = std::min(margin, max_offset);
+    const size_t usable_offset_span = max_offset > min_offset ? (max_offset - min_offset) : 0U;
+    const size_t raw_offset = min_offset +
+                              (usable_offset_span > 0U
+                                   ? static_cast<size_t>((entropy >> 40) % (usable_offset_span + 1U))
+                                   : 0U);
+    layout.object_offset_in_page = AlignDownSize(raw_offset, slot_alignment);
+
+    if (layout.object_offset_in_page > max_offset)
+        layout.object_offset_in_page = AlignDownSize(max_offset, slot_alignment);
+
+    return layout;
+}
+
+uint64_t BuildThreadWatchdogLayoutFingerprint(size_t replica_index,
+                                              const ThreadWatchdogMapping& control_mapping,
+                                              const ThreadWatchdogMapping& metrics_mapping,
+                                              uint64_t runtime_entropy)
+{
+    uint64_t fingerprint = runtime_entropy ^ (static_cast<uint64_t>(replica_index) << 32);
+    fingerprint = MixThreadWatchdogEntropy(
+        fingerprint ^ reinterpret_cast<uintptr_t>(control_mapping.object) ^
+        (static_cast<uint64_t>(control_mapping.region_size) << 7) ^
+        (static_cast<uint64_t>(control_mapping.accessible_page_index) << 17) ^
+        (static_cast<uint64_t>(control_mapping.object_offset_in_page) << 3));
+    fingerprint = MixThreadWatchdogEntropy(
+        fingerprint ^ reinterpret_cast<uintptr_t>(metrics_mapping.object) ^
+        (static_cast<uint64_t>(metrics_mapping.region_size) << 9) ^
+        (static_cast<uint64_t>(metrics_mapping.accessible_page_index) << 21) ^
+        (static_cast<uint64_t>(metrics_mapping.object_offset_in_page) << 5));
+    return fingerprint;
+}
+
+std::vector<size_t> BuildThreadWatchdogStartOrder(size_t replica_count, uint64_t runtime_entropy)
+{
+    std::vector<size_t> order(replica_count);
+    for (size_t index = 0; index < replica_count; ++index)
+        order[index] = index;
+
+    uint64_t shuffle_state = runtime_entropy;
+    for (size_t remaining = replica_count; remaining > 1; --remaining)
+    {
+        shuffle_state = MixThreadWatchdogEntropy(
+            shuffle_state ^ (static_cast<uint64_t>(remaining) * 0x94d049bb133111ebULL));
+        const size_t swap_index = static_cast<size_t>(shuffle_state % remaining);
+        std::swap(order[remaining - 1], order[swap_index]);
+    }
+
+    return order;
+}
+
+void UpdateAtomicMax(std::atomic<uint64_t>* target, uint64_t candidate)
+{
+    uint64_t current = target->load(std::memory_order_relaxed);
+    while (current < candidate &&
+           !target->compare_exchange_weak(current, candidate, std::memory_order_relaxed,
+                                          std::memory_order_relaxed))
+    {
+    }
+}
+
+bool InitializeThreadWatchdogMapping(ThreadWatchdogMapping* mapping,
+                                     size_t page_size,
+                                     const ThreadWatchdogLayout& layout,
+                                     char* error_buffer,
+                                     size_t error_buffer_size,
+                                     const char* label,
+                                     size_t replica_index)
+{
+    const size_t region_size = page_size * layout.region_page_count;
+    void* region = mmap(nullptr, region_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (region == MAP_FAILED)
+    {
+        snprintf(error_buffer, error_buffer_size,
+                 "thread watchdog %s mmap failed for replica %zu", label, replica_index);
+        return false;
+    }
+
+    if (mprotect(region, region_size, PROT_NONE) != 0)
+    {
+        snprintf(error_buffer, error_buffer_size,
+                 "thread watchdog %s guard-gap setup failed for replica %zu", label,
+                 replica_index);
+        munmap(region, region_size);
+        return false;
+    }
+
+    char* active_page = reinterpret_cast<char*>(region) + (layout.accessible_page_index * page_size);
+    if (mprotect(active_page, page_size, PROT_READ | PROT_WRITE) != 0)
+    {
+        snprintf(error_buffer, error_buffer_size,
+                 "thread watchdog %s active-page setup failed for replica %zu", label,
+                 replica_index);
+        munmap(region, region_size);
+        return false;
+    }
+
+    mapping->region = region;
+    mapping->region_size = region_size;
+    mapping->object = active_page + layout.object_offset_in_page;
+    mapping->accessible_page_index = layout.accessible_page_index;
+    mapping->object_offset_in_page = layout.object_offset_in_page;
+    return true;
+}
+
+void ThreadWatchdogWorker(ThreadWatchdogControl* control,
+                          ThreadWatchdogMetrics* metrics,
+                          uint64_t layout_fingerprint)
+{
+    ProbeError error{};
+    uint8_t mode = 0;
+    ThreadDeltaWindow window{};
+
+    if (!ReadUnixTimeNsFromCommpage(&window.local_before_ns, &mode, &error))
+    {
+        control->failed.store(true, std::memory_order_release);
+        return;
+    }
+
+    window.monotonic_before_ns = ReadMonotonicNs(&error);
+    if (window.monotonic_before_ns == 0 && error.message)
+    {
+        control->failed.store(true, std::memory_order_release);
+        return;
+    }
+
+    control->phase_mix.store(layout_fingerprint, std::memory_order_relaxed);
+    control->ready.store(true, std::memory_order_release);
+
+    while (control->keep_running.load(std::memory_order_acquire))
+    {
+        if (kThreadWatchdogPollIntervalNs > 0)
+        {
+            const struct timespec sleep_request = {
+                .tv_sec = 0,
+                .tv_nsec = static_cast<long>(kThreadWatchdogPollIntervalNs),
+            };
+            nanosleep(&sleep_request, nullptr);
+        }
+
+        error = ProbeError{};
+        if (!ReadUnixTimeNsFromCommpage(&window.local_after_ns, &mode, &error))
+        {
+            control->failed.store(true, std::memory_order_release);
+            return;
+        }
+
+        window.monotonic_after_ns = ReadMonotonicNs(&error);
+        if (window.monotonic_after_ns == 0 && error.message)
+        {
+            control->failed.store(true, std::memory_order_release);
+            return;
+        }
+
+        const ThreadDeltaEvaluation evaluation = EvaluateThreadDeltaWindow(window);
+        const uint64_t heartbeat = control->heartbeat.fetch_add(1, std::memory_order_relaxed) + 1ULL;
+        const uint64_t phase_mix =
+            MixThreadWatchdogEntropy(layout_fingerprint ^ heartbeat ^
+                                     evaluation.monotonic_elapsed_ns ^ evaluation.clock_gap_ns);
+        control->phase_mix.store(phase_mix, std::memory_order_relaxed);
+        UpdateAtomicMax(&metrics->max_delta_ns, evaluation.monotonic_elapsed_ns);
+        UpdateAtomicMax(&metrics->max_clock_gap_ns, evaluation.clock_gap_ns);
+        metrics->sample_count.fetch_add(1, std::memory_order_relaxed);
+
+        window.local_before_ns = window.local_after_ns;
+        window.monotonic_before_ns = window.monotonic_after_ns;
+    }
+}
+
+void ShutdownThreadWatchdogRuntime(ThreadWatchdogRuntime* runtime)
+{
+    for (ThreadWatchdogReplica& replica : runtime->replicas)
+    {
+        if (replica.control)
+            replica.control->keep_running.store(false, std::memory_order_release);
+    }
+
+    for (std::thread& thread : runtime->threads)
+    {
+        if (thread.joinable())
+            thread.join();
+    }
+}
+
+void ReleaseThreadWatchdogRuntime(ThreadWatchdogRuntime* runtime)
+{
+    ShutdownThreadWatchdogRuntime(runtime);
+
+    for (ThreadWatchdogReplica& replica : runtime->replicas)
+    {
+        if (replica.control)
+        {
+            replica.control->~ThreadWatchdogControl();
+            replica.control = nullptr;
+        }
+        if (replica.metrics)
+        {
+            replica.metrics->~ThreadWatchdogMetrics();
+            replica.metrics = nullptr;
+        }
+
+        if (replica.control_mapping.region != MAP_FAILED)
+            munmap(replica.control_mapping.region, replica.control_mapping.region_size);
+        if (replica.metrics_mapping.region != MAP_FAILED)
+            munmap(replica.metrics_mapping.region, replica.metrics_mapping.region_size);
+    }
+    runtime->replicas.clear();
+    runtime->threads.clear();
+    runtime->runtime_entropy = 0;
+}
+
+bool StartThreadWatchdogRuntime(ThreadWatchdogRuntime* runtime,
+                                char* error_buffer,
+                                size_t error_buffer_size)
+{
+    runtime->replicas.clear();
+    runtime->threads.clear();
+    runtime->replicas.reserve(kThreadWatchdogReplicaCount);
+    runtime->threads.reserve(kThreadWatchdogReplicaCount);
+
+    const size_t page_size = GetSystemPageSize();
+    const uint64_t runtime_entropy =
+        MixThreadWatchdogEntropy(ReadMonotonicNs(nullptr) ^ reinterpret_cast<uintptr_t>(runtime) ^
+                                 reinterpret_cast<uintptr_t>(error_buffer));
+    runtime->runtime_entropy = runtime_entropy;
+
+    for (size_t index = 0; index < kThreadWatchdogReplicaCount; ++index)
+    {
+        const ThreadWatchdogLayout control_layout =
+            ComputeThreadWatchdogLayout(page_size, index, runtime_entropy, 0x13579bdf2468ace0ULL,
+                                        sizeof(ThreadWatchdogControl),
+                                        alignof(ThreadWatchdogControl));
+        const ThreadWatchdogLayout metrics_layout =
+            ComputeThreadWatchdogLayout(page_size, index, runtime_entropy, 0xfdb97531eca86420ULL,
+                                        sizeof(ThreadWatchdogMetrics),
+                                        alignof(ThreadWatchdogMetrics));
+
+        ThreadWatchdogReplica replica{};
+        replica.replica_index = index;
+        if (!InitializeThreadWatchdogMapping(&replica.control_mapping, page_size, control_layout,
+                                             error_buffer, error_buffer_size, "control", index) ||
+            !InitializeThreadWatchdogMapping(&replica.metrics_mapping, page_size, metrics_layout,
+                                             error_buffer, error_buffer_size, "metrics", index))
+        {
+            if (replica.control_mapping.region != MAP_FAILED)
+                munmap(replica.control_mapping.region, replica.control_mapping.region_size);
+            if (replica.metrics_mapping.region != MAP_FAILED)
+                munmap(replica.metrics_mapping.region, replica.metrics_mapping.region_size);
+            ReleaseThreadWatchdogRuntime(runtime);
+            return false;
+        }
+
+        replica.control = new (replica.control_mapping.object) ThreadWatchdogControl();
+        replica.metrics = new (replica.metrics_mapping.object) ThreadWatchdogMetrics();
+        replica.control->keep_running.store(true, std::memory_order_release);
+        replica.layout_fingerprint =
+            BuildThreadWatchdogLayoutFingerprint(index, replica.control_mapping,
+                                                replica.metrics_mapping, runtime_entropy);
+        runtime->replicas.push_back(replica);
+    }
+
+    const std::vector<size_t> start_order =
+        BuildThreadWatchdogStartOrder(runtime->replicas.size(), runtime_entropy);
+    for (size_t start_rank = 0; start_rank < start_order.size(); ++start_rank)
+    {
+        ThreadWatchdogReplica& replica = runtime->replicas[start_order[start_rank]];
+        replica.control->phase_mix.store(MixThreadWatchdogEntropy(replica.layout_fingerprint ^ start_rank),
+                                         std::memory_order_relaxed);
+        try
+        {
+            runtime->threads.emplace_back(ThreadWatchdogWorker, replica.control, replica.metrics,
+                                          replica.layout_fingerprint);
+        }
+        catch (const std::exception& exception)
+        {
+            snprintf(error_buffer, error_buffer_size,
+                     "thread watchdog spawn failed: %s", exception.what());
+            ReleaseThreadWatchdogRuntime(runtime);
+            return false;
+        }
+    }
+
+    const uint64_t start_ns = ReadMonotonicNs(nullptr);
+    const uint64_t deadline_ns = start_ns + 500000000ULL;
+    while (true)
+    {
+        size_t ready_count = 0;
+        for (const ThreadWatchdogReplica& replica : runtime->replicas)
+        {
+            if (replica.control->failed.load(std::memory_order_acquire))
+            {
+                snprintf(error_buffer, error_buffer_size,
+                         "thread watchdog worker initialization failed");
+                for (ThreadWatchdogReplica& stop_replica : runtime->replicas)
+                    stop_replica.control->keep_running.store(false, std::memory_order_release);
+                for (std::thread& thread : runtime->threads)
+                {
+                    if (thread.joinable())
+                        thread.join();
+                }
+                ReleaseThreadWatchdogRuntime(runtime);
+                return false;
+            }
+            if (replica.control->ready.load(std::memory_order_acquire))
+                ++ready_count;
+        }
+
+        if (ready_count == runtime->replicas.size())
+            return true;
+
+        if (ReadMonotonicNs(nullptr) >= deadline_ns)
+        {
+            snprintf(error_buffer, error_buffer_size, "thread watchdog startup timed out");
+            for (ThreadWatchdogReplica& replica : runtime->replicas)
+                replica.control->keep_running.store(false, std::memory_order_release);
+            for (std::thread& thread : runtime->threads)
+            {
+                if (thread.joinable())
+                    thread.join();
+            }
+            ReleaseThreadWatchdogRuntime(runtime);
+            return false;
+        }
+
+        const struct timespec sleep_request = {.tv_sec = 0, .tv_nsec = 1000000L};
+        nanosleep(&sleep_request, nullptr);
+    }
+}
+
+void StopThreadWatchdogRuntime(ThreadWatchdogRuntime* runtime, ThreadWatchdogAggregate* aggregate)
+{
+    *aggregate = ThreadWatchdogAggregate{};
+    aggregate->thread_count = runtime->replicas.size();
+
+    uintptr_t min_address = 0;
+    uintptr_t max_address = 0;
+
+    for (ThreadWatchdogReplica& replica : runtime->replicas)
+    {
+        const uintptr_t control_address = reinterpret_cast<uintptr_t>(replica.control);
+        const uintptr_t metrics_address = reinterpret_cast<uintptr_t>(replica.metrics);
+        min_address = min_address == 0 ? control_address : std::min(min_address, control_address);
+        min_address = std::min(min_address, metrics_address);
+        max_address = std::max(max_address, control_address);
+        max_address = std::max(max_address, metrics_address);
+        replica.control->keep_running.store(false, std::memory_order_release);
+    }
+
+    for (std::thread& thread : runtime->threads)
+    {
+        if (thread.joinable())
+            thread.join();
+    }
+
+    for (const ThreadWatchdogReplica& replica : runtime->replicas)
+    {
+        const bool ready = replica.control->ready.load(std::memory_order_acquire);
+        const bool failed = replica.control->failed.load(std::memory_order_acquire);
+        const uint64_t heartbeat = replica.control->heartbeat.load(std::memory_order_relaxed);
+        const uint64_t phase_mix = replica.control->phase_mix.load(std::memory_order_relaxed);
+        const uint64_t sample_count = replica.metrics->sample_count.load(std::memory_order_relaxed);
+
+        aggregate->ready_thread_count +=
+            ready ? 1ULL : 0ULL;
+        aggregate->sample_count += sample_count;
+        aggregate->max_delta_ns =
+            std::max(aggregate->max_delta_ns, replica.metrics->max_delta_ns.load(std::memory_order_relaxed));
+        aggregate->max_clock_gap_ns = std::max(
+            aggregate->max_clock_gap_ns,
+            replica.metrics->max_clock_gap_ns.load(std::memory_order_relaxed));
+        aggregate->layout_fingerprint =
+            MixThreadWatchdogEntropy(aggregate->layout_fingerprint ^ replica.layout_fingerprint);
+        if (ready && !failed && heartbeat == 0 && sample_count == 0 && phase_mix == replica.layout_fingerprint)
+            aggregate->post_ready_stall_count += 1ULL;
+        aggregate->failed = aggregate->failed || failed;
+    }
+
+    if (max_address > min_address)
+        aggregate->memory_spread_bytes = max_address - min_address;
+
+    ReleaseThreadWatchdogRuntime(runtime);
+}
+
+void ApplyThreadWatchdogAggregate(VerificationResult* result,
+                                  const ThreadWatchdogAggregate& aggregate)
+{
+    result->thread_watchdog_count = aggregate.thread_count;
+    result->thread_watchdog_ready_count = aggregate.ready_thread_count;
+    result->thread_watchdog_sample_count = aggregate.sample_count;
+    result->thread_watchdog_post_ready_stall_count = aggregate.post_ready_stall_count;
+    result->thread_watchdog_max_delta_ns = aggregate.max_delta_ns;
+    result->thread_watchdog_max_clock_gap_ns = aggregate.max_clock_gap_ns;
+    result->thread_watchdog_memory_spread_bytes = aggregate.memory_spread_bytes;
+    result->thread_watchdog_layout_fingerprint = aggregate.layout_fingerprint;
+    result->thread_watchdog_failed = aggregate.failed;
+}
+
+struct ThreadWatchdogScope
+{
+    ThreadWatchdogRuntime runtime;
+    VerificationResult* result = nullptr;
+    bool active = false;
+
+    ~ThreadWatchdogScope()
+    {
+        if (!active || !result)
+            return;
+
+        ThreadWatchdogAggregate aggregate{};
+        StopThreadWatchdogRuntime(&runtime, &aggregate);
+        ApplyThreadWatchdogAggregate(result, aggregate);
+    }
 };
 } // namespace
 
@@ -712,6 +1285,9 @@ bool FetchHttpsVerification(const char* url_cstr, VerificationResult* result, ch
 {
     @autoreleasepool
     {
+        ThreadWatchdogScope thread_watchdog_scope{};
+        thread_watchdog_scope.result = result;
+
         NSString* url_string = [NSString stringWithUTF8String:url_cstr];
         NSURL* url = [NSURL URLWithString:url_string];
         if (!url || ![[[url scheme] lowercaseString] isEqualToString:@"https"])
@@ -739,6 +1315,13 @@ bool FetchHttpsVerification(const char* url_cstr, VerificationResult* result, ch
         request.timeoutInterval = GetRequestTimeoutSeconds();
         request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
         [request setValue:@"no-cache" forHTTPHeaderField:@"Cache-Control"];
+
+        if (!StartThreadWatchdogRuntime(&thread_watchdog_scope.runtime, error_buffer,
+                                        error_buffer_size))
+        {
+            return false;
+        }
+        thread_watchdog_scope.active = true;
 
         NSURLResponse* response = nil;
         NSError* session_error = nil;
@@ -867,6 +1450,15 @@ WatchdogEvaluation EvaluateVerificationResult(const VerificationResult& result,
         append_reason("elapsed_exceeded");
     if (evaluation.clock_gap_ns > safe_clock_gap_threshold_ms * 1000000ULL)
         append_reason("clock_gap_exceeded");
+    if (result.thread_watchdog_failed)
+        append_reason("thread_watchdog_failed");
+    if (result.thread_watchdog_post_ready_stall_count > 0 &&
+        evaluation.monotonic_elapsed_ns >= kThreadWatchdogPostReadyGraceNs)
+        append_reason("thread_watchdog_killed_after_ready");
+    if (result.thread_watchdog_max_delta_ns > safe_elapsed_threshold_ms * 1000000ULL)
+        append_reason("thread_delta_exceeded");
+    if (result.thread_watchdog_max_clock_gap_ns > safe_clock_gap_threshold_ms * 1000000ULL)
+        append_reason("thread_clock_gap_exceeded");
 
     evaluation.anomaly_detected = evaluation.anomaly_reasons != "none";
     if (!evaluation.anomaly_detected)
@@ -904,9 +1496,10 @@ int main(int argc, char* argv[])
     const WatchdogEvaluation evaluation =
         EvaluateVerificationResult(result, max_remote_delta_ms, max_elapsed_ms, max_clock_gap_ms);
     const char* anomaly_text = evaluation.anomaly_detected ? "1" : "0";
+    const char* thread_watchdog_failed_text = result.thread_watchdog_failed ? "1" : "0";
 
     const std::string canonical_payload =
-        std::string("v2\n") + "verification_url=" + verification_url + "\n" +
+        std::string("v4\n") + "verification_url=" + verification_url + "\n" +
         "resolved_url=" + result.resolved_url + "\n" +
         "status_code=" + std::to_string(result.status_code) + "\n" +
         "remote_time_source=" + result.remote_time_source + "\n" +
@@ -920,6 +1513,18 @@ int main(int argc, char* argv[])
         "wall_elapsed_ns=" + std::to_string(evaluation.wall_elapsed_ns) + "\n" +
         "monotonic_elapsed_ns=" + std::to_string(evaluation.monotonic_elapsed_ns) + "\n" +
         "clock_gap_ns=" + std::to_string(evaluation.clock_gap_ns) + "\n" +
+        "thread_watchdog_count=" + std::to_string(result.thread_watchdog_count) + "\n" +
+        "thread_watchdog_ready_count=" + std::to_string(result.thread_watchdog_ready_count) + "\n" +
+        "thread_watchdog_sample_count=" + std::to_string(result.thread_watchdog_sample_count) + "\n" +
+        "thread_watchdog_post_ready_stall_count=" +
+        std::to_string(result.thread_watchdog_post_ready_stall_count) + "\n" +
+        "thread_watchdog_max_delta_ns=" + std::to_string(result.thread_watchdog_max_delta_ns) + "\n" +
+        "thread_watchdog_max_clock_gap_ns=" + std::to_string(result.thread_watchdog_max_clock_gap_ns) + "\n" +
+        "thread_watchdog_memory_spread_bytes=" +
+        std::to_string(result.thread_watchdog_memory_spread_bytes) + "\n" +
+        "thread_watchdog_layout_fingerprint=" +
+        std::to_string(result.thread_watchdog_layout_fingerprint) + "\n" +
+        "thread_watchdog_failed=" + std::string(thread_watchdog_failed_text) + "\n" +
         "remote_midpoint_delta_ns=" + std::to_string(evaluation.remote_midpoint_delta_ns) + "\n" +
         "body_length=" + std::to_string(result.body_length) + "\n" +
         "anomaly_detected=" + anomaly_text + "\n" +
@@ -942,6 +1547,17 @@ int main(int argc, char* argv[])
     WriteKeyValueI64("wall_elapsed_ms=", evaluation.wall_elapsed_ns / 1000000LL);
     WriteKeyValueU64("monotonic_elapsed_ms=", evaluation.monotonic_elapsed_ns / 1000000ULL);
     WriteKeyValueU64("clock_gap_ms=", evaluation.clock_gap_ns / 1000000ULL);
+    WriteKeyValueText("thread_watchdog_mode=", "tricky_shot_swarm");
+    WriteKeyValueU64("thread_watchdog_threads=", result.thread_watchdog_count);
+    WriteKeyValueU64("thread_watchdog_ready_threads=", result.thread_watchdog_ready_count);
+    WriteKeyValueU64("thread_watchdog_samples=", result.thread_watchdog_sample_count);
+    WriteKeyValueU64("thread_watchdog_post_ready_stall_threads=",
+                     result.thread_watchdog_post_ready_stall_count);
+    WriteKeyValueU64("thread_watchdog_max_delta_ms=", result.thread_watchdog_max_delta_ns / 1000000ULL);
+    WriteKeyValueU64("thread_watchdog_max_clock_gap_ms=", result.thread_watchdog_max_clock_gap_ns / 1000000ULL);
+    WriteKeyValueU64("thread_watchdog_memory_spread_bytes=", result.thread_watchdog_memory_spread_bytes);
+    WriteKeyValueU64("thread_watchdog_layout_fingerprint=", result.thread_watchdog_layout_fingerprint);
+    WriteKeyValueText("thread_watchdog_failed=", thread_watchdog_failed_text);
     WriteKeyValueU64("response_body_bytes=", result.body_length);
     WriteKeyValueI64("threshold_remote_delta_ms=", max_remote_delta_ms);
     WriteKeyValueU64("effective_remote_threshold_ms=", evaluation.effective_remote_threshold_ms);
