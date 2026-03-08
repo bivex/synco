@@ -30,6 +30,9 @@ Reads local time from the macOS commpage, fetches remote HTTPS server time, meas
 - Monotonic elapsed / wall elapsed comparison
 - CRC32 fingerprint of the verification sample
 - Threshold-based runtime anomaly detection for stalls, clock jumps, or large remote drift
+- Internal `tricky-shot` watchdog swarm: 5 background watchdog threads sampling delta windows in parallel
+- Deliberately scattered watchdog memory layout with guard gaps, split control/metrics mappings, and a layout fingerprint folded into the final CRC payload
+- Post-`ready` watchdog kill detection for cases where a thread is alive long enough to arm, but gets terminated before producing samples
 
 Note: the tool prefers a timestamp found in a JSON response body. When it falls back to the HTTP `Date` header, effective remote drift checks include an extra precision allowance because `Date` is usually only second-precision.
 
@@ -166,6 +169,55 @@ Important output fields:
 - `remote_time_field` — JSON field path used for remote time, or `Date` for header fallback
 - `remote_time_precision_ms` — estimated precision of the remote time source
 - `effective_remote_threshold_ms` — remote drift threshold after adding source precision allowance
+- `thread_watchdog_mode` — current internal watchdog implementation (`tricky_shot_swarm`)
+- `thread_watchdog_threads` / `thread_watchdog_ready_threads` — configured watchdog worker count and how many armed successfully
+- `thread_watchdog_samples` — total per-thread delta samples collected during the request window
+- `thread_watchdog_post_ready_stall_threads` — threads that became `ready` but never produced a sample before shutdown
+- `thread_watchdog_layout_fingerprint` — hash-like fingerprint of the scattered watchdog memory layout, included in the CRC32 payload
+
+### Tricky-shot watchdog internals
+
+`time_watchdog_crc32` now runs an internal watchdog swarm during the HTTPS verification window:
+
+- `5` watchdog threads are spawned for each verification
+- each thread keeps its own local delta window (`local_before/after` vs monotonic `before/after`)
+- watchdog state is intentionally scattered in memory:
+  - separate `mmap` regions for control and metrics
+  - `PROT_NONE` guard gaps around the active page
+  - per-replica page jitter and in-page offset jitter
+  - shuffled thread startup order
+- the aggregate watchdog layout is folded into `thread_watchdog_layout_fingerprint`, which is then included in the canonical CRC payload
+
+This is meant to make the watchdog less linear and easier to notice if something tampers with thread execution or memory placement.
+
+### Post-ready thread kill detection
+
+There is now an explicit detector for the case where a watchdog thread:
+
+1. becomes `ready`
+2. survives startup checks
+3. gets killed before producing even a single sample
+
+When that happens, and enough elapsed time passed for at least one normal watchdog tick, the tool reports:
+
+- `thread_watchdog_killed_after_ready`
+
+This plugs the previous gap where a debugger or external kill could terminate watchdog workers after arming without setting `thread_watchdog_failed`.
+
+### Quick local demo
+
+A one-command demo helper is included:
+
+```bash
+./demo_time_watchdog_crc32.py
+```
+
+It:
+
+- builds `time_watchdog_crc32` if needed
+- starts a local HTTPS test server
+- runs a clean `OK` case and an `ANOMALY` case
+- prints the key watchdog fields including `thread_watchdog_mode`, `thread_watchdog_threads`, `thread_watchdog_layout_fingerprint`, and `smart_crc32`
 
 ### Debug stall verification
 
@@ -175,6 +227,8 @@ Practical interpretation:
 - `elapsed_exceeded` is the primary stall/pause signal
 - `remote_delta_exceeded` may also trigger when the remote source is precise (for example a JSON millisecond timestamp)
 - `clock_gap_ms` usually stays small during a simple debugger pause, so it is a secondary signal rather than the main stall detector
+- `thread_delta_exceeded` may also trigger because the watchdog threads themselves observe an abnormally large per-thread elapsed delta while the process is paused in the debugger
+- if watchdog workers are killed after reaching `ready`, `thread_watchdog_killed_after_ready` is expected once the post-ready grace window has passed
 
 ## Server Configuration
 
